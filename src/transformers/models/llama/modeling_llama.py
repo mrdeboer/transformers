@@ -150,12 +150,14 @@ class LlamaRotaryEmbedding(nn.Module):
             self._dynamic_frequency_update(position_ids, device=x.device)
 
         # Core RoPE block
-        if position_ids.dim() > 1:
-            inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
-            position_ids_expanded = position_ids[:, None, :].float()
-        else:
-            inv_freq_expanded = self.inv_freq[:, None].float().expand(-1, position_ids.shape[0])
-            position_ids_expanded = position_ids[:, None].expand(-1, position_ids.shape[0])
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        # if position_ids.dim() > 1:
+        #     inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        #     position_ids_expanded = position_ids[:, None, :].float()
+        # else:
+        #     inv_freq_expanded = self.inv_freq[:, None].float().expand(-1, position_ids.shape[0])
+        #     position_ids_expanded = position_ids[:, None].expand(-1, position_ids.shape[0])
         # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
         device_type = x.device.type
         device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
@@ -417,17 +419,24 @@ class LlamaFlashAttention2(LlamaAttention):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+
+        query_states = query_states.view(hidden_shape).transpose(1, 2)
+        key_states = key_states.view(hidden_shape).transpose(1, 2)
+        value_states = value_states.view(hidden_shape).transpose(1, 2)
+
         # Flash attention requires the input to have the shape
         # batch_size x seq_length x head_dim x hidden_dim
         # therefore we just need to keep the original shape
-        if position_ids.dim() > 1:
-            query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-            key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-            value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        else:
-            query_states = query_states.view(-1, self.num_heads, self.head_dim)
-            key_states = key_states.view(-1, self.num_key_value_heads, self.head_dim)
-            value_states = value_states.view(-1, self.num_key_value_heads, self.head_dim)
+        # if position_ids.dim() > 1:
+        #     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        #     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        #     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        # else:
+        #     query_states = query_states.view(-1, self.num_heads, self.head_dim)
+        #     key_states = key_states.view(-1, self.num_key_value_heads, self.head_dim)
+        #     value_states = value_states.view(-1, self.num_key_value_heads, self.head_dim)
 
         if position_embeddings is None:
             logger.warning_once(
@@ -449,6 +458,10 @@ class LlamaFlashAttention2(LlamaAttention):
         # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]. We would need to refactor the KV cache
         # to be able to avoid many of these transpose/reshape/view.
         if position_ids.dim() > 1:
+            query_states = query_states.transpose(1, 2)
+            key_states = key_states.transpose(1, 2)
+            value_states = value_states.transpose(1, 2)
+        else:
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)
@@ -497,8 +510,7 @@ class LlamaFlashAttention2(LlamaAttention):
             **kwargs,
         )
 
-        if position_ids.dim() > 1:
-            attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
@@ -1203,9 +1215,9 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
 
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        if hidden_states.dim() == 2: 
-            if kwargs.get("lm_head_indices", None) is not None:
-                hidden_states = hidden_states[kwargs["lm_head_indices"]]
+        if "lm_head_indices" in kwargs:
+            if kwargs["lm_head_indices"] is not None:
+                hidden_states = hidden_states[:, kwargs["lm_head_indices"]]
         else:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
         logits = self.lm_head(hidden_states)
