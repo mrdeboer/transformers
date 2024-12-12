@@ -404,7 +404,14 @@ class LlamaFlashAttention2(LlamaAttention):
 
         output_attentions = False
 
-        bsz, q_len, _ = hidden_states.size()
+        if position_ids.dim() > 1:
+            bsz, q_len, _ = hidden_states.size()
+        else:
+            q_len = None
+
+        input_shape = hidden_states.shape[:-1]
+        print(f"INPUT SHAPE: {input_shape}")
+
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -445,6 +452,7 @@ class LlamaFlashAttention2(LlamaAttention):
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)
+
 
         dropout_rate = self.attention_dropout if self.training else 0.0
 
@@ -1195,7 +1203,12 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
 
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
+        if hidden_states.dim() == 2: 
+            if kwargs.get("lm_head_indices", None) is not None:
+                hidden_states = hidden_states[kwargs["lm_head_indices"]]
+        else:
+            hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+        logits = self.lm_head(hidden_states)
 
         loss = None
         if labels is not None:

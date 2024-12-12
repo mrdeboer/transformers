@@ -20,6 +20,8 @@
 
 __version__ = "4.48.0.dev0"
 
+print("CORRECT DEV VERSION")
+
 from typing import TYPE_CHECKING
 
 # Check the dependencies satisfy the minimal versions required.
