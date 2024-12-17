@@ -1,0 +1,8 @@
+version: '3.4'
+
+services:
+  transformers:
+    image: transformers
+    build:
+      context: .
+      dockerfile: ./Dockerfile
